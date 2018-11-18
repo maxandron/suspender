@@ -3,42 +3,44 @@ package suspender
 import kotlinx.cinterop.*
 import platform.posix.*
 
-fun hello(): String = "Hello, Kotlin/Native!"
+const val DEFAULT_PID = "3555"
+const val DEFAULT_DUMP = "/tmp/suspender.dump"
+const val DEFAULT_BINARY = "/home/maxandron/work/CTFs/digimon/digimon_nowait"
 
-fun main(args: Array<String>) {
-    println(hello())
+fun main(args_temp: Array<String>) {
+    val args = arrayOf("program", "load")
 
-    if (args.size != 3 && args.size != 2) {
-        println("Usage: ./suspender suspend <PID>")
-        println("Usage: ./suspender load <dump file> <binary path>")
+    if (args.size != 2) {
+        println("Usage: ./suspender suspend")
+        println("Usage: ./suspender load")
         exit(1)
     }
 
-    if (args[0] == "suspend") {
-        suspendPID(atoi(args[1]))
-    } else if (args[0] == "load") {
-        loadProgram(args[1], args[2])
+    if (args[1] == "suspend") {
+        suspendProgram(atoi(DEFAULT_PID), DEFAULT_DUMP)
+    } else if (args[1] == "load") {
+        loadProgram(DEFAULT_DUMP, DEFAULT_BINARY)
     }
 }
 
 fun loadProgram(dumpFile: String, binaryPath: String) {
     val pid = fork()
-//    when (pid) {
-//        0 -> {
-//            // Child
-//            memScoped {
-////                ptrace(PTRACE_TRACEME, 0, nativeNullPtr, nativeNullPtr)
-////                exec(binaryPath.cstr.ptr.rawValue) // will automagically get a SIGTRAP signal
-//            }
-//        }
-//        -1 -> exit(1) // Error
-//        else -> {
-//            // Parent
-////            wait(nativeNullPtr)
-//            val checkpointFile = fopen("/tmp/test", "w") ?: return
-//            loadSegments(checkpointFile)
-//        }
-//    }
+    when (pid) {
+        0 -> {
+            // Child
+            memScoped {
+                ptrace(PTRACE_TRACEME, 0, nativeNullPtr, nativeNullPtr)
+//                exec(binaryPath.cstr.ptr.rawValue) // will automagically get a SIGTRAP signal
+            }
+        }
+        -1 -> exit(1) // Error
+        else -> {
+            // Parent
+//            wait(nativeNullPtr)
+            val checkpointFile = fopen("/tmp/test", "w") ?: return
+            loadSegments(checkpointFile)
+        }
+    }
 }
 
 fun loadSegments(checkpointFile: CPointer<FILE>) {
@@ -49,44 +51,60 @@ fun loadSegments(checkpointFile: CPointer<FILE>) {
     }
 }
 
-fun suspendPID(pid: Int) {
+fun suspendProgram(pid: Int, dumpFileName: String) {
+    // Suspend the process
     kill(pid, SIGSTOP)
+    waitpid(pid, null, 0)
 
     val mappings = extractMappings(pid)
 
-    val checkpointFile = fopen("/tmp/test", "w") ?: return
-    val memoryFile = fopen("/proc/$pid/mem", "r") ?: return
+    val dumpFile = fopen(dumpFileName, "w") ?: return
+    val memoryFile = fopen("/proc/$pid/mem", "rb") ?: return
 
     try {
-        val mappingsRegex = "^([0-9a-z].*?)-([0-9a-z].*?) .* (.*)\$".toRegex()
+        val mappingsRegex = "^([0-9a-z].*?)-([0-9a-z].*?) .*".toRegex()
         for (map in mappings.lines()) {
             val matches = mappingsRegex.find(map)
             if (matches != null) {
-                val (startAddress, endAddress, mappingName) = matches.destructured
-                saveSegment(checkpointFile, memoryFile, startAddress, endAddress, mappingName)
+                val (startAddress, endAddress) = matches.destructured
+                saveSegment(
+                    dumpFile, memoryFile,
+                    strtol(startAddress, null, 16),
+                    strtol(endAddress, null, 16)
+                )
             }
         }
     } finally {
-        fclose(checkpointFile)
+        fclose(dumpFile)
         fclose(memoryFile)
     }
 }
 
 fun saveSegment(
-    checkpointFile: CPointer<FILE>,
+    dumpFile: CPointer<FILE>,
     memoryFile: CPointer<FILE>,
-    startAddress: String,
-    endAddress: String,
-    mappingName: String
+    startAddress: Long,
+    endAddress: Long
 ) {
-    val segmentSize = strtol(endAddress, null, 16) - strtol(startAddress, null, 16)
-    val headline = "$startAddress\t$endAddress\t$mappingName\t$segmentSize\n"
-    fputs(headline, checkpointFile)
+    val segmentSize = endAddress - startAddress
+
+    if (0L == segmentSize) {
+        return
+    }
+
+    println("saving segment from $startAddress to $endAddress ($segmentSize)")
+
+    // Write header (<startAddress> <endAddress>, <segmentSize>)
+    fwrite(cValuesOf(startAddress), LongVar.size.convert(), 1.convert(), dumpFile)
+    fwrite(cValuesOf(endAddress), LongVar.size.convert(), 1.convert(), dumpFile)
+    fwrite(cValuesOf(segmentSize), LongVar.size.convert(), 1.convert(), dumpFile)
+
     memScoped {
         val memoryBuffer = allocArray<ByteVar>(segmentSize)
-        fseek(memoryFile, segmentSize, SEEK_SET)
-        fread(memoryBuffer, sizeOf<ByteVar>().convert(), segmentSize.convert(), memoryFile)
-        fwrite(memoryBuffer, sizeOf<ByteVar>().convert(), segmentSize.convert(), checkpointFile)
+        fseek(memoryFile, startAddress, SEEK_SET)
+        val amountRead = fread(memoryBuffer, ByteVar.size.convert(), segmentSize.convert(), memoryFile)
+        println("Read $amountRead bytes")
+        fwrite(memoryBuffer, ByteVar.size.convert(), segmentSize.convert(), dumpFile)
     }
 }
 

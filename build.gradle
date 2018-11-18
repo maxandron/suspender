@@ -23,8 +23,6 @@ kotlin {
         // in gradle.properties file and re-import your project in IDE.
         linuxMain {
         }
-        linuxTest {
-        }
     }
 }
 
@@ -35,7 +33,6 @@ task runProgram {
         def programFile = kotlin.targets.linux.compilations.main.getBinary('EXECUTABLE', buildType)
         exec {
             executable programFile
-            args ''
         }
     }
 }
