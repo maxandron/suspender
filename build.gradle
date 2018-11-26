@@ -27,7 +27,7 @@ kotlin {
 }
 
 task runProgram {
-    def buildType = 'release' // Change to 'debug' to run application with debug symbols.
+    String buildType = 'debug' // Change to 'debug' to run application with debug symbols.
     dependsOn "link${buildType.capitalize()}ExecutableLinux"
     doLast {
         def programFile = kotlin.targets.linux.compilations.main.getBinary('EXECUTABLE', buildType)
